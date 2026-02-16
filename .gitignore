@@ -22,6 +22,7 @@ build/
 data/chromadb/
 data/aggregates/
 data/checkpoints/
+data/storico_parquet/
 *.pkl
 *.parquet
 

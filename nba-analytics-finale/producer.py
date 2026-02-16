@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 Producer Kafka per eventi NBA
-Genera eventi partite e li invia a Kafka in tempo reale
+Genera eventi partite e li invia a Kafka in formato Avro
 """
 import os
-import json
+import io
 import time
 import random
 import pandas as pd
+import fastavro
 from kafka import KafkaProducer
 from datetime import datetime, timedelta
 
@@ -16,6 +17,27 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 KAFKA_SERVER = 'localhost:9092'
 TOPIC = 'nba-games'
 DATA_FILE = os.path.join(SCRIPT_DIR, '../data/nba_2008-2025_betting.csv')
+
+# Schema Avro per gli eventi NBA
+SCHEMA_AVRO = {
+    "type": "record",
+    "name": "NBAEvent",
+    "fields": [
+        {"name": "event_type", "type": "string"},
+        {"name": "game_id", "type": "string"},
+        {"name": "timestamp", "type": "string"},
+        {"name": "home_team", "type": "string"},
+        {"name": "away_team", "type": "string"},
+        {"name": "home_score", "type": ["null", "int"], "default": None},
+        {"name": "away_score", "type": ["null", "int"], "default": None},
+        {"name": "quarter", "type": ["null", "int"], "default": None},
+        {"name": "winner", "type": ["null", "string"], "default": None},
+        {"name": "margin", "type": ["null", "int"], "default": None},
+        {"name": "spread", "type": ["null", "double"], "default": None},
+        {"name": "total", "type": ["null", "double"], "default": None}
+    ]
+}
+PARSED_SCHEMA = fastavro.parse_schema(SCHEMA_AVRO)
 
 SQUADRE = ['ATL', 'BOS', 'BKN', 'CHA', 'CHI', 'CLE', 'DAL', 'DEN',
            'DET', 'GSW', 'HOU', 'IND', 'LAC', 'LAL', 'MEM', 'MIA',
@@ -57,6 +79,13 @@ def genera_dati_random(n_partite):
     return pd.DataFrame(partite)
 
 
+def serializza_avro(evento):
+    """Serializza un evento in formato Avro binario"""
+    buf = io.BytesIO()
+    fastavro.schemaless_writer(buf, PARSED_SCHEMA, evento)
+    return buf.getvalue()
+
+
 def simula_partita_live(partita, producer):
     """Simula una partita in tempo reale con eventi progressivi"""
     game_id = f"game_{datetime.now().strftime('%H%M%S')}_{random.randint(100, 999)}"
@@ -72,8 +101,13 @@ def simula_partita_live(partita, producer):
         'game_id': game_id,
         'home_team': home,
         'away_team': away,
-        'spread': partita.get('spread', 0),
-        'total': partita.get('total', 220),
+        'home_score': None,
+        'away_score': None,
+        'quarter': None,
+        'winner': None,
+        'margin': None,
+        'spread': float(partita.get('spread', 0)),
+        'total': float(partita.get('total', 220)),
         'timestamp': datetime.now().isoformat()
     }
     producer.send(TOPIC, evento_start)
@@ -99,6 +133,10 @@ def simula_partita_live(partita, producer):
             'away_team': away,
             'home_score': home_score,
             'away_score': away_score,
+            'winner': None,
+            'margin': None,
+            'spread': None,
+            'total': None,
             'timestamp': datetime.now().isoformat()
         }
         producer.send(TOPIC, evento_quarter)
@@ -114,8 +152,11 @@ def simula_partita_live(partita, producer):
         'away_team': away,
         'home_score': home_final,
         'away_score': away_final,
+        'quarter': None,
         'winner': vincitore,
         'margin': abs(home_final - away_final),
+        'spread': None,
+        'total': None,
         'timestamp': datetime.now().isoformat()
     }
     producer.send(TOPIC, evento_end)
@@ -126,9 +167,10 @@ def simula_partita_live(partita, producer):
 
 def main():
     """Funzione principale - loop continuo"""
-    print("=== NBA Kafka Producer (Live) ===")
+    print("=== NBA Kafka Producer (Avro) ===")
     print(f"Server: {KAFKA_SERVER}")
     print(f"Topic: {TOPIC}")
+    print(f"Formato: Avro")
     print("\nModalita LIVE - Ctrl+C per fermare\n")
     
     # Carica dati
@@ -139,7 +181,7 @@ def main():
     try:
         producer = KafkaProducer(
             bootstrap_servers=KAFKA_SERVER,
-            value_serializer=lambda x: json.dumps(x).encode('utf-8')
+            value_serializer=serializza_avro
         )
         print("Connesso!\n")
     except Exception as e:

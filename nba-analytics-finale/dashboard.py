@@ -281,7 +281,33 @@ def tab_analytics():
     
     st.markdown("---")
     
-    # === SEZIONE 2: DATI STORICI (Batch Layer) ===
+    # === SEZIONE 2: STORICO PARQUET (Batch Layer) ===
+    st.subheader("🗄️ Storico Partite (Parquet)")
+    
+    PARQUET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../data/storico_parquet')
+    
+    if os.path.exists(PARQUET_DIR) and os.listdir(PARQUET_DIR):
+        try:
+            df_parquet = pd.read_parquet(PARQUET_DIR)
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("🏁 Partite Registrate", len(df_parquet))
+            col2.metric("📁 Formato", "Parquet")
+            
+            if 'winner' in df_parquet.columns:
+                top_winner = df_parquet['winner'].value_counts().idxmax()
+                col3.metric("🏆 Più Vittorie", top_winner)
+            
+            with st.expander("📋 Anteprima Storico Parquet"):
+                st.dataframe(df_parquet.tail(15), use_container_width=True)
+        except Exception as e:
+            st.error(f"Errore lettura Parquet: {e}")
+    else:
+        st.info("⏳ Nessun dato Parquet. Lo storico viene popolato automaticamente dal consumer.")
+    
+    st.markdown("---")
+    
+    # === SEZIONE 3: DATI STORICI (Dataset CSV) ===
     st.subheader("📚 Dataset Storico")
     
     if os.path.exists(DATA_FILE):

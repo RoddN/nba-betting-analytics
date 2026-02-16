@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
 Consumer Spark Streaming per eventi NBA
-Aggiorna statistiche live quando arrivano risultati partite
+Riceve eventi Avro da Kafka, aggiorna stats live e salva storico in Parquet
 """
 
 import os
+import io
 import json
 from datetime import datetime
+import fastavro
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, from_json, when, current_timestamp
+from pyspark.sql.functions import col, udf, current_timestamp
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType
 
 # Configurazione
@@ -17,12 +19,34 @@ KAFKA_SERVER = 'localhost:9092'
 TOPIC = 'nba-games'
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, '../data/aggregates')
 CHECKPOINT_DIR = os.path.join(SCRIPT_DIR, '../data/checkpoints')
+PARQUET_DIR = os.path.join(SCRIPT_DIR, '../data/storico_parquet')
 CACHE_FILE = os.path.join(SCRIPT_DIR, '../data/events_cache.json')
 LIVE_STATS_FILE = os.path.join(SCRIPT_DIR, '../data/live_stats.json')
 TRAINING_STATS_FILE = os.path.join(SCRIPT_DIR, '../models/team_stats.pkl')
 
-# Schema eventi
-SCHEMA_EVENTO = StructType([
+# Schema Avro (stesso del producer)
+SCHEMA_AVRO = {
+    "type": "record",
+    "name": "NBAEvent",
+    "fields": [
+        {"name": "event_type", "type": "string"},
+        {"name": "game_id", "type": "string"},
+        {"name": "timestamp", "type": "string"},
+        {"name": "home_team", "type": "string"},
+        {"name": "away_team", "type": "string"},
+        {"name": "home_score", "type": ["null", "int"], "default": None},
+        {"name": "away_score", "type": ["null", "int"], "default": None},
+        {"name": "quarter", "type": ["null", "int"], "default": None},
+        {"name": "winner", "type": ["null", "string"], "default": None},
+        {"name": "margin", "type": ["null", "int"], "default": None},
+        {"name": "spread", "type": ["null", "double"], "default": None},
+        {"name": "total", "type": ["null", "double"], "default": None}
+    ]
+}
+PARSED_SCHEMA = fastavro.parse_schema(SCHEMA_AVRO)
+
+# Schema Spark (per il DataFrame dopo deserializzazione)
+SCHEMA_SPARK = StructType([
     StructField("event_type", StringType()),
     StructField("game_id", StringType()),
     StructField("timestamp", StringType()),
@@ -190,9 +214,37 @@ def salva_cache(batch_df, batch_id):
     print(f"  Cache: {len(eventi)} eventi")
 
 
+def salva_parquet(batch_df, batch_id):
+    """Salva i game_end in Parquet come storico (batch layer)"""
+    if batch_df.isEmpty():
+        return
+    
+    # Solo eventi game_end
+    game_ends = batch_df.filter(col("event_type") == "game_end")
+    
+    if game_ends.count() == 0:
+        return
+    
+    # Append al file Parquet
+    (game_ends
+        .select("game_id", "home_team", "away_team", "home_score", 
+                "away_score", "winner", "margin", "timestamp")
+        .write
+        .mode("append")
+        .parquet(PARQUET_DIR)
+    )
+    
+    print(f"  Parquet: {game_ends.count()} partite salvate in {PARQUET_DIR}")
+
+
 def crea_spark():
     """Crea sessione Spark"""
     print("Creazione sessione Spark...")
+    
+    # Usa lo stesso Python del venv (serve per fastavro nei worker)
+    import sys
+    os.environ['PYSPARK_PYTHON'] = sys.executable
+    os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable
     
     spark = (SparkSession.builder
         .appName("NBA-Consumer")
@@ -207,9 +259,25 @@ def crea_spark():
     return spark
 
 
+def deserializza_avro(bytes_avro):
+    """Deserializza bytes Avro in un dizionario JSON"""
+    if bytes_avro is None:
+        return None
+    try:
+        buf = io.BytesIO(bytes_avro)
+        record = fastavro.schemaless_reader(buf, PARSED_SCHEMA)
+        return json.dumps(record)
+    except:
+        return None
+
+
 def leggi_stream_kafka(spark):
-    """Legge stream da Kafka"""
-    print(f"Connessione a Kafka: {TOPIC}")
+    """Legge stream Avro da Kafka"""
+    print(f"Connessione a Kafka: {TOPIC} (formato Avro)")
+    
+    # Registra UDF per deserializzare Avro
+    from pyspark.sql.functions import from_json
+    avro_udf = udf(deserializza_avro, StringType())
     
     stream_raw = (spark.readStream
         .format("kafka")
@@ -219,9 +287,10 @@ def leggi_stream_kafka(spark):
         .load()
     )
     
+    # Deserializza: bytes Avro -> JSON string -> colonne Spark
     stream = (stream_raw
-        .selectExpr("CAST(value AS STRING) as json")
-        .select(from_json(col("json"), SCHEMA_EVENTO).alias("data"))
+        .withColumn("json_str", avro_udf(col("value")))
+        .select(from_json(col("json_str"), SCHEMA_SPARK).alias("data"))
         .select("data.*")
     )
     
@@ -234,6 +303,7 @@ def main():
     
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    os.makedirs(PARQUET_DIR, exist_ok=True)
     
     # Inizializza stats
     print("Inizializzazione statistiche...")
@@ -246,7 +316,7 @@ def main():
     
     print("\nAvvio elaborazioni...")
     
-    # Query per salvare cache eventi
+    # Query 1: salva cache eventi (per la dashboard)
     display = stream.select("event_type", "game_id", "home_team", "away_team", 
                            "home_score", "away_score", "winner", "margin", "quarter")
     
@@ -257,7 +327,7 @@ def main():
         .start()
     )
     
-    # Query per aggiornare stats live (solo game_end)
+    # Query 2: aggiorna stats live (speed layer)
     query_stats = (stream.writeStream
         .outputMode("append")
         .foreachBatch(aggiorna_live_stats)
@@ -265,9 +335,20 @@ def main():
         .start()
     )
     
-    print(f"\nCache eventi: {CACHE_FILE}")
-    print(f"Stats live: {LIVE_STATS_FILE}")
-    print(f"Partite processate: {live_data.get('games_processed', 0)}")
+    # Query 3: salva storico in Parquet (batch layer)
+    query_parquet = (stream.writeStream
+        .outputMode("append")
+        .foreachBatch(salva_parquet)
+        .option("checkpointLocation", os.path.join(CHECKPOINT_DIR, "parquet"))
+        .trigger(processingTime="10 seconds")
+        .start()
+    )
+    
+    print(f"\nOutput attivi:")
+    print(f"  Cache eventi (JSON): {CACHE_FILE}")
+    print(f"  Stats live (JSON):   {LIVE_STATS_FILE}")
+    print(f"  Storico (Parquet):   {PARQUET_DIR}")
+    print(f"  Partite processate:  {live_data.get('games_processed', 0)}")
     print("\nPremi Ctrl+C per terminare\n")
     
     try:

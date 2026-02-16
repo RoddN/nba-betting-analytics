@@ -1,8 +1,8 @@
 # NBA Betting Analytics
 
-Progetto di Information Systems For Big Data.
+Progetto di Information Systems (A.A. 2024/2025).
 
-Il sistema prende un dataset di 23.118 partite NBA reali (stagioni 2008–2025), le usa per allenare un modello Random Forest che predice i vincitori, e permette di fare domande in linguaggio naturale sui dati tramite RAG. In parallelo, un producer Kafka simula partite in tempo reale che vengono processate con Spark Structured Streaming.
+Il sistema prende un dataset di 23.118 partite NBA reali (stagioni 2008–2025), le usa per allenare un modello Random Forest che predice i vincitori, e permette di fare domande in linguaggio naturale sui dati tramite RAG. In parallelo, un producer Kafka simula partite in tempo reale serializzate in **Avro** che vengono processate con Spark Structured Streaming e salvate in **Parquet** come storico.
 
 Tutto gira su una dashboard Streamlit.
 
@@ -10,13 +10,15 @@ Tutto gira su una dashboard Streamlit.
 
 Il progetto segue la Lambda Architecture:
 
-- **Batch layer** → `ml_predictor.py` allena il Random Forest sull'intero dataset storico
-- **Speed layer** → `producer.py` manda eventi Kafka, `spark_consumer.py` li processa con Spark e aggiorna le statistiche live
+- **Batch layer** → `ml_predictor.py` allena il Random Forest sull'intero dataset storico + storico partite in **Parquet**
+- **Speed layer** → `producer.py` manda eventi Kafka in formato **Avro**, `spark_consumer.py` li processa con Spark e aggiorna le statistiche live
 - **Serving layer** → `dashboard.py` unisce i due layer e mostra tutto all'utente
 
 ## Stack
 
 - **Kafka** per lo streaming (con Zookeeper, tutto dockerizzato)
+- **Avro** (fastavro) per la serializzazione dei messaggi Kafka
+- **Parquet** (Snappy) per lo storage storico dei risultati
 - **Spark Structured Streaming** come consumer
 - **scikit-learn** per il Random Forest
 - **ChromaDB** + **all-MiniLM-L6-v2** per la ricerca semantica
@@ -27,8 +29,8 @@ Il progetto segue la Lambda Architecture:
 
 ```
 nba-analytics-finale/
-├── producer.py              # genera eventi e li manda a Kafka
-├── spark_consumer.py        # legge da Kafka, aggiorna stats live
+├── producer.py              # genera eventi Avro e li manda a Kafka
+├── spark_consumer.py        # legge Avro da Kafka, salva JSON + Parquet
 ├── ml_predictor.py          # training + predizione Random Forest
 ├── rag_engine.py            # indicizzazione e ricerca semantica
 ├── dashboard.py             # dashboard Streamlit (4 tab)
@@ -42,6 +44,7 @@ A runtime vengono generati anche:
 
 - `models/` → modello salvato (.pkl), scaler, statistiche squadre, metriche
 - `data/` → live_stats.json, events_cache.json, cartella chromadb
+- `data/storico_parquet/` → storico partite in formato Parquet (Snappy)
 - `grafici/` → i PNG dei grafici di performance
 
 ## Setup
@@ -91,8 +94,17 @@ Ha 4 tab:
 - **📡 Stream** — mostra gli eventi Kafka (inizio partita, fine quarti, fine partita)
 - **🤖 Predizioni** — si selezionano due squadre e il modello restituisce la probabilità di vittoria
 - **🔍 RAG** — si scrive una domanda tipo "vittorie Lakers contro Celtics" e il sistema cerca nel database
-- **Analytics** — confronto tra statistiche live (speed layer) e storiche (batch layer)
+- **📊 Analytics** — confronto tra statistiche live (speed layer), storico Parquet e dataset storico
+
+## Formati dati
+
+| Fase | Formato | Motivo |
+|------|---------|--------|
+| Producer → Kafka | **Avro** (binario, schemaless) | ~50% più compatto di JSON, schema tipizzato |
+| Cache eventi (dashboard) | JSON | Lettura diretta da Streamlit |
+| Statistiche live | JSON | Aggiornamento rapido, lettura da dashboard |
+| Storico partite | **Parquet** (Snappy) | Columnar, compresso, ideale per analytics batch |
 
 ## Dipendenze
 
-Tutto in `requirements.txt`: kafka-python, pyspark, scikit-learn, chromadb, sentence-transformers, groq, streamlit, plotly, pandas, numpy, python-dotenv.
+Tutto in `requirements.txt`: kafka-python, pyspark, fastavro, pyarrow, scikit-learn, chromadb, sentence-transformers, groq, streamlit, plotly, pandas, numpy, python-dotenv.
