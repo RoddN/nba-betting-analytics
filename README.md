@@ -1,6 +1,6 @@
 # NBA Betting Analytics
 
-Progetto di Information Systems (A.A. 2024/2025).
+Progetto di Information Systems For Big Data.
 
 Il sistema prende un dataset di 23.118 partite NBA reali (stagioni 2008–2025), le usa per allenare un modello Random Forest che predice i vincitori, e permette di fare domande in linguaggio naturale sui dati tramite RAG. In parallelo, un producer Kafka simula partite in tempo reale che vengono processate con Spark Structured Streaming.
 
