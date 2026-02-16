@@ -11,7 +11,8 @@ import joblib
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.model_selection import cross_val_score
 
 import json
 
@@ -194,6 +195,7 @@ def allena_modello():
     
     # Calcola features
     features_df = calcola_features(df)
+    feature_names = list(features_df.columns)
     
     # Prepara X e y
     X = features_df.values
@@ -210,7 +212,14 @@ def allena_modello():
     X_train = scaler.fit_transform(X_train)
     X_test = scaler.transform(X_test)
     
-    # Allena Random Forest
+    # Cross-validation (5-fold)
+    print("\nCross-Validation (5-fold)...")
+    modello_cv = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)
+    cv_scores = cross_val_score(modello_cv, X_train, y_train, cv=5, scoring='accuracy')
+    print(f"   Accuracy per fold: {[f'{s:.4f}' for s in cv_scores]}")
+    print(f"   Media: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
+    
+    # Allena Random Forest (modello finale su tutto il training set)
     print("\nTraining Random Forest...")
     modello = RandomForestClassifier(
         n_estimators=100,
@@ -219,13 +228,27 @@ def allena_modello():
     )
     modello.fit(X_train, y_train)
     
-    # Valuta
+    # Valuta su test set
     y_pred = modello.predict(X_test)
     accuracy = accuracy_score(y_test, y_pred)
     
     print(f"\nAccuracy: {accuracy:.2%}")
     print("\nClassification Report:")
-    print(classification_report(y_test, y_pred))
+    print(classification_report(y_test, y_pred, target_names=['Vittoria Trasferta', 'Vittoria Casa']))
+    
+    # Confusion Matrix
+    cm = confusion_matrix(y_test, y_pred)
+    print("Confusion Matrix:")
+    print(f"   {'':>20} Pred Trasf.  Pred Casa")
+    print(f"   {'Reale Trasferta':>20}    {cm[0][0]:>5}       {cm[0][1]:>5}")
+    print(f"   {'Reale Casa':>20}    {cm[1][0]:>5}       {cm[1][1]:>5}")
+    
+    # Feature Importance
+    print("\nFeature Importance:")
+    importances = modello.feature_importances_
+    sorted_idx = np.argsort(importances)[::-1]
+    for i in sorted_idx:
+        print(f"   {feature_names[i]:>20}: {importances[i]:.4f} {'█' * int(importances[i] * 40)}")
     
     # Mostra top squadre
     print("\nTop 5 squadre per win rate:")
@@ -233,12 +256,31 @@ def allena_modello():
     for team, stats in sorted_teams:
         print(f"   {team}: {stats['win_rate']:.1%} ({stats['total_games']} partite)")
     
-    # Salva modello e statistiche
+    # Salva modello, scaler, statistiche e metriche
     os.makedirs(os.path.dirname(MODEL_FILE), exist_ok=True)
     joblib.dump(modello, MODEL_FILE)
     joblib.dump(scaler, SCALER_FILE)
     joblib.dump(_team_stats, STATS_FILE)
+    
+    # Salva metriche per grafici
+    metriche = {
+        'accuracy': accuracy,
+        'cv_scores': cv_scores.tolist(),
+        'cv_mean': cv_scores.mean(),
+        'cv_std': cv_scores.std(),
+        'confusion_matrix': cm.tolist(),
+        'feature_names': feature_names,
+        'feature_importances': importances.tolist(),
+        'classification_report': classification_report(y_test, y_pred, target_names=['Vittoria Trasferta', 'Vittoria Casa'], output_dict=True),
+        'y_test': y_test.tolist(),
+        'y_pred': y_pred.tolist(),
+        'y_proba': modello.predict_proba(X_test).tolist()
+    }
+    metriche_file = os.path.join(os.path.dirname(MODEL_FILE), 'metriche.pkl')
+    joblib.dump(metriche, metriche_file)
+    
     print(f"\nModello salvato in: {MODEL_FILE}")
+    print(f"Metriche salvate in: {metriche_file}")
     
     return modello, scaler
 
