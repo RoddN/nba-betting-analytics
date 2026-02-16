@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Data
+data/chromadb/
+data/aggregates/
+data/checkpoints/
+*.pkl
+*.parquet
+
+# Models
+models/*.pkl
+!models/.gitkeep
+
+# Kafka / Spark
+metastore_db/
+derby.log
+spark-warehouse/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Streamlit
+.streamlit/
+
+# Temp files
+*.tmp
+*.bak
+.cache/
+events_cache.json
+
+# Environment
+.env
+!.env.example
+
+# Project specific
+CHECKLIST_FINALE.md
+GITHUB_SETUP.md
+progetto/*.bak
+
+# File troppo grandi per GitHub
+data/PlayerStatistics.csv
